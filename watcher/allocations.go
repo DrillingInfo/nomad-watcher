@@ -2,30 +2,30 @@ package watcher
 
 import (
     "time"
-    "github.com/Sirupsen/logrus"
 
+    "github.com/Sirupsen/logrus"
     "github.com/hashicorp/nomad/api"
 )
 
 type AllocEvent struct {
-    Timestamp  time.Time                       `json:"@timestamp"`
-    WaitIndex  uint64                          `json:"wait_index"`
+    Timestamp          time.Time               `json:"@timestamp"`
+    WaitIndex          uint64                  `json:"wait_index"`
     AllocationListStub *api.AllocationListStub `json:"alloc"`
-    JobMeta  map[string]string                 `json:"job_meta"`
+    JobMeta            map[string]string       `json:"job_meta"`
 }
 
 // this is a derived event from an allocation. Time comes from TaskEvent.Time.
 type TaskStateEvent struct {
-    Timestamp  time.Time `json:"@timestamp"`
-    WaitIndex  uint64    `json:"wait_index"`
+    Timestamp time.Time `json:"@timestamp"`
+    WaitIndex uint64    `json:"wait_index"`
 
     // copied from the Allocation
-    JobID              string // "elasticsearch-curator/periodic-1488845700"
-    AllocID            string // "29cdfa9e-820a-bab8-4eda-45b000397719"
-    AllocName          string // "elasticsearch-curator/periodic-1488845700.curator[0]"
-    TaskGroup          string // "curator"
-    EvalID             string // "8eb39148-7a00-a164-920f-d59143f72b74"
-    NodeID             string // "f8fa01e0-351b-7652-d80e-10547fa3bfe8"
+    JobID     string // "elasticsearch-curator/periodic-1488845700"
+    AllocID   string // "29cdfa9e-820a-bab8-4eda-45b000397719"
+    AllocName string // "elasticsearch-curator/periodic-1488845700.curator[0]"
+    TaskGroup string // "curator"
+    EvalID    string // "8eb39148-7a00-a164-920f-d59143f72b74"
+    NodeID    string // "f8fa01e0-351b-7652-d80e-10547fa3bfe8"
 
     // Task comes from the keys of TaskStates
     Task string
@@ -36,12 +36,13 @@ type TaskStateEvent struct {
 
     // the actual Task Event (phew!)
     TaskEvent *api.TaskEvent
+    JobMeta   map[string]string `json:"job_meta"`
 }
 
-func WatchAllocations(allocClient *api.Allocations, jobsClient *api.Jobs) (<- chan AllocEvent, <- chan TaskStateEvent) {
+func WatchAllocations(allocClient *api.Allocations, jobsClient *api.Jobs) (<-chan AllocEvent, <-chan TaskStateEvent) {
     log := logrus.WithFields(logrus.Fields{
         "package": "watcher",
-        "fn": "WatchAllocations",
+        "fn":      "WatchAllocations",
     })
 
     allocEventChan := make(chan AllocEvent)
@@ -85,8 +86,14 @@ func WatchAllocations(allocClient *api.Allocations, jobsClient *api.Jobs) (<- ch
                     allocId := allocStub.ID
                     extantAllocs[allocId] = true
 
+                    //Query the allocation's job so the Metadata can be extracted
+                    jobInfo, _, err := jobsClient.Info(allocStub.JobID, queryOpts)
+                    if err != nil {
+                        log.Errorf("unable to find job: %v", err)
+                        continue
+                    }
 
-                    if (allocStub.CreateIndex == allocStub.ModifyIndex) {
+                    if allocStub.CreateIndex == allocStub.ModifyIndex {
                         // allocation just created; use CreateTime field
                         ts = time.Unix(0, allocStub.CreateTime)
                     }
@@ -95,13 +102,7 @@ func WatchAllocations(allocClient *api.Allocations, jobsClient *api.Jobs) (<- ch
                     allocationUpdated := (queryOpts.WaitIndex < allocStub.CreateIndex) || (queryOpts.WaitIndex < allocStub.ModifyIndex)
 
                     if allocationUpdated {
-                        //If alloc is updated, query it's Job so the Metadata can be extracted
-                        jobInfo, _, err := jobsClient.Info(allocStub.JobID, queryOpts)
-                        if err != nil {
-                            log.Errorf("unable to find job: %v", err)
-                            continue
-                        }
-                      
+
                         allocEventChan <- AllocEvent{
                             ts,
                             queryMeta.LastIndex,
@@ -134,7 +135,7 @@ func WatchAllocations(allocClient *api.Allocations, jobsClient *api.Jobs) (<- ch
                                         Failed: taskState.Failed,
 
                                         TaskEvent: taskEvent,
-
+                                        JobMeta:   jobInfo.Meta,
                                     }
                                 }
 
@@ -147,8 +148,8 @@ func WatchAllocations(allocClient *api.Allocations, jobsClient *api.Jobs) (<- ch
                 }
 
                 // prune allocs
-                for allocId, _ := range allocTaskEventTimes {
-                    if _, ok := extantAllocs[allocId]; ! ok {
+                for allocId := range allocTaskEventTimes {
+                    if _, ok := extantAllocs[allocId]; !ok {
                         log.Infof("allocation %s has been deleted", allocId)
 
                         delete(allocTaskEventTimes, allocId)
