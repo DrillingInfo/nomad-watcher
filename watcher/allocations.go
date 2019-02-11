@@ -1,17 +1,20 @@
 package watcher
 
 import (
+	"log"
 	"time"
 
 	"github.com/Sirupsen/logrus"
+
 	"github.com/hashicorp/nomad/api"
+	nomad "github.com/hashicorp/nomad/api"
 )
 
 type AllocEvent struct {
 	Timestamp          time.Time               `json:"@timestamp"`
 	WaitIndex          uint64                  `json:"wait_index"`
 	AllocationListStub *api.AllocationListStub `json:"alloc"`
-	JobMeta            map[string]string       `json:"job_meta"`
+	// JobMeta            map[string]string       `json:"job_meta"`
 }
 
 // this is a derived event from an allocation. Time comes from TaskEvent.Time.
@@ -36,14 +39,23 @@ type TaskStateEvent struct {
 
 	// the actual Task Event (phew!)
 	TaskEvent *api.TaskEvent
-	JobMeta   map[string]string `json:"job_meta"`
+	// JobMeta   map[string]string `json:"job_meta"`
 }
 
-func WatchAllocations(allocClient *api.Allocations, jobsClient *api.Jobs) (<-chan AllocEvent, <-chan TaskStateEvent) {
+func checkError(msg string, err error) {
+	if err != nil {
+		log.Fatalf("%s: %+v", msg, err)
+	}
+}
+
+func WatchAllocations(allocClient *api.Allocations) (<-chan AllocEvent, <-chan TaskStateEvent) {
 	log := logrus.WithFields(logrus.Fields{
 		"package": "watcher",
 		"fn":      "WatchAllocations",
 	})
+
+	nomadClient, err := nomad.NewClient(nomad.DefaultConfig())
+	checkError("creating Nomad client", err)
 
 	allocEventChan := make(chan AllocEvent)
 	taskStateEventChan := make(chan TaskStateEvent)
@@ -87,11 +99,13 @@ func WatchAllocations(allocClient *api.Allocations, jobsClient *api.Jobs) (<-cha
 					extantAllocs[allocId] = true
 
 					//Query the allocation's job so the Metadata can be extracted
+					jobsClient := nomadClient.Jobs()
 					jobInfo, _, err := jobsClient.Info(allocStub.JobID, queryOpts)
 					if err != nil {
 						log.Errorf("unable to find job: %v", err)
 						continue
 					}
+					log.Debugf("Job Debug: %s", jobInfo)
 
 					if allocStub.CreateIndex == allocStub.ModifyIndex {
 						// allocation just created; use CreateTime field
@@ -107,7 +121,7 @@ func WatchAllocations(allocClient *api.Allocations, jobsClient *api.Jobs) (<-cha
 							ts,
 							queryMeta.LastIndex,
 							allocStub,
-							jobInfo.Meta,
+							// jobInfo.Meta,
 						}
 					}
 
@@ -135,7 +149,7 @@ func WatchAllocations(allocClient *api.Allocations, jobsClient *api.Jobs) (<-cha
 										Failed: taskState.Failed,
 
 										TaskEvent: taskEvent,
-										JobMeta:   jobInfo.Meta,
+										//JobMeta:   jobInfo.Meta,
 									}
 								}
 
@@ -157,6 +171,7 @@ func WatchAllocations(allocClient *api.Allocations, jobsClient *api.Jobs) (<-cha
 				}
 
 			}
+			log.Debugf("End of alloc file")
 
 			queryOpts.WaitIndex = queryMeta.LastIndex
 		}
